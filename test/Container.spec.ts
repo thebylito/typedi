@@ -31,6 +31,17 @@ describe('Container', function () {
 
       expect(Container.get(zero)).toBe(0);
     });
+
+    it('should resolve a value-only global service from a child container', () => {
+      const config = { url: 'localhost' };
+      Container.set('shared-config', config);
+
+      const scopedContainer = Container.of('value-only-scope');
+
+      /** Value-only services have no type/factory to reconstruct, so the child must reuse the global value. */
+      expect(scopedContainer.has('shared-config')).toBe(true);
+      expect(scopedContainer.get('shared-config')).toBe(config);
+    });
   });
 
   describe('has', () => {

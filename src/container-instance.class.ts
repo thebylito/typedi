@@ -102,13 +102,19 @@ export class ContainerInstance {
     /** If it's the first time requested in the child container we load it from parent and set it. */
     if (globalService && this !== globalContainer) {
       /**
-       * Transient services must yield a fresh value on every request, so they are never stored or
-       * cached in this (child) container — otherwise the cloned copy below would turn a transient
-       * service into a per-container singleton. We resolve a new value using `this` container so
-       * any scoped dependencies are still resolved from here. `getServiceValue` never mutates
-       * transient metadata, so resolving directly against the parent's metadata is safe.
+       * Some services cannot (or must not) be cloned into the child container with an emptied value
+       * for per-scope re-instantiation:
+       *
+       * - transient services must yield a fresh value on every request, so caching a clone would
+       *   turn them into a per-container singleton;
+       * - value-only services (no `type` and no `factory`) have nothing to re-instantiate from, so
+       *   emptying the cloned value would make `getServiceValue` throw `CannotInstantiateValueError`.
+       *
+       * In both cases we resolve directly against the parent's metadata using `this` container (so
+       * any scoped dependencies still resolve from here). `getServiceValue` does not mutate the
+       * metadata in these branches, so sharing the parent's metadata is safe.
        */
-      if (globalService.transient === true) {
+      if (globalService.transient === true || (!globalService.type && !globalService.factory)) {
         return this.getServiceValue(globalService);
       }
 
