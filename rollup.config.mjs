@@ -6,16 +6,18 @@ export default {
   input: 'build/esm5/index.js',
   output: [
     {
-      name: 'ClassTransformer',
+      name: 'TypeDI',
       format: 'umd',
       file: 'build/bundles/typedi.umd.js',
       sourcemap: true,
+      exports: 'named',
     },
     {
-      name: 'ClassTransformer',
+      name: 'TypeDI',
       format: 'umd',
       file: 'build/bundles/typedi.umd.min.js',
       sourcemap: true,
+      exports: 'named',
       plugins: [terser()],
     },
   ],
