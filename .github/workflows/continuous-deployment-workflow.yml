@@ -19,7 +19,7 @@ jobs:
       - run: npm run build
       - run: cp LICENSE build/LICENSE
       - run: cp README.md build/README.md
-      - run: jq 'del(.devDependencies) | del(.scripts)' package.json > build/package.json
+      - run: jq 'del(.devDependencies) | del(.scripts) | del(.files) | .main = "./cjs/index.js" | .module = "./esm5/index.js" | .es2015 = "./esm2015/index.js" | .typings = "./types/index.d.ts"' package.json > build/package.json
       - run: npm publish ./build
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}

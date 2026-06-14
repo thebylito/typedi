@@ -5,10 +5,13 @@
   "author": "TypeStack contributors",
   "license": "MIT",
   "sideEffects": false,
-  "main": "./cjs/index.js",
-  "module": "./esm5/index.js",
-  "es2015": "./esm2015/index.js",
-  "typings": "./types/index.d.ts",
+  "main": "./build/cjs/index.js",
+  "module": "./build/esm5/index.js",
+  "es2015": "./build/esm2015/index.js",
+  "typings": "./build/types/index.d.ts",
+  "files": [
+    "build"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/pleerock/typedi.git"
@@ -22,6 +25,7 @@
     "dependency-injection"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "npm run build:clean && npm run build:es2015 && npm run build:esm5 && npm run build:cjs && npm run build:types && npm run build:umd",
     "build:clean": "rimraf build",
     "build:es2015": "tsc --project tsconfig.prod.esm2015.json",
