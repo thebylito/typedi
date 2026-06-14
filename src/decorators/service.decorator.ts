@@ -8,9 +8,9 @@ import { Constructable } from '../types/constructable.type';
 /**
  * Marks class as a service that can be injected using Container.
  */
-export function Service<T = unknown>(): Function;
-export function Service<T = unknown>(name: string): Function;
-export function Service<T = unknown>(token: Token<unknown>): Function;
+export function Service(): Function;
+export function Service(name: string): Function;
+export function Service(token: Token<unknown>): Function;
 export function Service<T = unknown>(options?: ServiceOptions<T>): Function;
 export function Service<T>(optionsOrServiceIdentifier?: ServiceOptions<T> | Token<any> | string): ClassDecorator {
   return targetConstructor => {

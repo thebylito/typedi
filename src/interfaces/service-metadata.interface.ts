@@ -47,5 +47,5 @@ export interface ServiceMetadata<Type = unknown> {
   /**
    * Instance of the target class.
    */
-  value: unknown | Symbol;
+  value: unknown;
 }

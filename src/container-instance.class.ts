@@ -10,6 +10,20 @@ import { ServiceOptions } from './interfaces/service-options.interface';
 import { EMPTY_VALUE } from './empty.const';
 
 /**
+ * Names of the built-in types that cannot be resolved from the container and are therefore
+ * skipped when injecting reflected constructor parameters. Hoisted to module scope so the
+ * lookup set is allocated once instead of on every parameter of every instantiation.
+ */
+const PRIMITIVE_PARAM_TYPE_NAMES = new Set(['string', 'boolean', 'number', 'object']);
+
+/**
+ * Caches the reflected `design:paramtypes` of each service type. The emitted metadata is static
+ * for a given class, so reading it from `Reflect` once and reusing it avoids a metadata lookup on
+ * every instantiation — which matters most for transient services that are re-created on each `get`.
+ */
+const reflectedParamTypesCache = new WeakMap<Function, any[]>();
+
+/**
  * TypeDI can have multiple containers.
  * One container is ContainerInstance.
  */
@@ -17,8 +31,15 @@ export class ContainerInstance {
   /** Container instance id. */
   public readonly id!: string;
 
-  /** All registered services in the container. */
-  private services: ServiceMetadata<unknown>[] = [];
+  /**
+   * All registered services in the container, indexed by their service identifier.
+   *
+   * Each identifier maps to a list of metadata so that services registered with the
+   * `multiple: true` flag can share a single id. For the common (single) case the list
+   * holds exactly one entry. Using a `Map` keeps `findService`/`findAllServices` at O(1)
+   * instead of the previous O(n) linear scan over a flat array.
+   */
+  private services: Map<ServiceIdentifier, ServiceMetadata<unknown>[]> = new Map();
 
   constructor(id: string) {
     this.id = id;
@@ -29,10 +50,21 @@ export class ContainerInstance {
    * Optionally, parameters can be passed in case if instance is initialized in the container for the first time.
    */
   has<T>(type: Constructable<T>): boolean;
-  has<T>(id: string): boolean;
+  has(id: string): boolean;
   has<T>(id: Token<T>): boolean;
-  has<T>(identifier: ServiceIdentifier): boolean {
-    return !!this.findService(identifier);
+  has(identifier: ServiceIdentifier): boolean {
+    if (this.findService(identifier) !== undefined) {
+      return true;
+    }
+
+    /**
+     * Mirror `get()`/`getMany()`: a child container can also resolve services registered on the
+     * global container, so `has()` must report those as available too. Without this, `has()` could
+     * return `false` for an identifier that `get()` resolves successfully via the global fallback.
+     */
+    const globalContainer = Container.of(undefined);
+
+    return this !== globalContainer && globalContainer.findService(identifier) !== undefined;
   }
 
   /**
@@ -46,6 +78,20 @@ export class ContainerInstance {
   get<T>(id: ServiceIdentifier<T>): T;
   get<T>(identifier: ServiceIdentifier<T>): T {
     const globalContainer = Container.of(undefined);
+
+    /**
+     * Fast path for the global container, which is the most common case (e.g. `Container.get(...)`).
+     * There is no parent container to fall back to, so the global and scoped lookups would be the
+     * same single lookup. Resolving it once here avoids a redundant `findService` on every call.
+     */
+    if (this === globalContainer) {
+      const service = this.findService(identifier);
+
+      if (service) return this.getServiceValue(service);
+
+      throw new ServiceNotFoundError(identifier);
+    }
+
     const globalService = globalContainer.findService(identifier);
     const scopedService = this.findService(identifier);
 
@@ -55,6 +101,17 @@ export class ContainerInstance {
 
     /** If it's the first time requested in the child container we load it from parent and set it. */
     if (globalService && this !== globalContainer) {
+      /**
+       * Transient services must yield a fresh value on every request, so they are never stored or
+       * cached in this (child) container — otherwise the cloned copy below would turn a transient
+       * service into a per-container singleton. We resolve a new value using `this` container so
+       * any scoped dependencies are still resolved from here. `getServiceValue` never mutates
+       * transient metadata, so resolving directly against the parent's metadata is safe.
+       */
+      if (globalService.transient === true) {
+        return this.getServiceValue(globalService);
+      }
+
       const clonedService = { ...globalService };
       clonedService.value = EMPTY_VALUE;
 
@@ -85,7 +142,24 @@ export class ContainerInstance {
   getMany<T>(id: Token<T>): T[];
   getMany<T>(id: ServiceIdentifier<T>): T[];
   getMany<T>(identifier: ServiceIdentifier<T>): T[] {
-    return this.findAllServices(identifier).map(service => this.getServiceValue(service));
+    const localServices = this.findAllServices(identifier);
+
+    if (localServices.length > 0) {
+      return localServices.map(service => this.getServiceValue(service));
+    }
+
+    /**
+     * Mirror `get()`: when nothing is registered locally we fall back to the global container so
+     * that globally-registered `multiple: true` services are still returned from a child container.
+     * Without this fallback `getMany` returns an empty array from any child container, unlike `get`.
+     */
+    const globalContainer = Container.of(undefined);
+
+    if (this !== globalContainer) {
+      return globalContainer.findAllServices(identifier).map(service => this.getServiceValue(service));
+    }
+
+    return [];
   }
 
   /**
@@ -153,7 +227,13 @@ export class ContainerInstance {
     if (service && service.multiple !== true) {
       Object.assign(service, newService);
     } else {
-      this.services.push(newService);
+      const existingServices = this.services.get(newService.id);
+
+      if (existingServices !== undefined) {
+        existingServices.push(newService);
+      } else {
+        this.services.set(newService.id, [newService]);
+      }
     }
 
     if (newService.eager) {
@@ -170,14 +250,12 @@ export class ContainerInstance {
     if (Array.isArray(identifierOrIdentifierArray)) {
       identifierOrIdentifierArray.forEach(id => this.remove(id));
     } else {
-      this.services = this.services.filter(service => {
-        if (service.id === identifierOrIdentifierArray) {
-          this.destroyServiceInstance(service);
-          return false;
-        }
+      const services = this.services.get(identifierOrIdentifierArray);
 
-        return true;
-      });
+      if (services !== undefined) {
+        services.forEach(service => this.destroyServiceInstance(service));
+        this.services.delete(identifierOrIdentifierArray);
+      }
     }
 
     return this;
@@ -189,11 +267,11 @@ export class ContainerInstance {
   public reset(options: { strategy: 'resetValue' | 'resetServices' } = { strategy: 'resetValue' }): this {
     switch (options.strategy) {
       case 'resetValue':
-        this.services.forEach(service => this.destroyServiceInstance(service));
+        this.services.forEach(services => services.forEach(service => this.destroyServiceInstance(service)));
         break;
       case 'resetServices':
-        this.services.forEach(service => this.destroyServiceInstance(service));
-        this.services = [];
+        this.services.forEach(services => services.forEach(service => this.destroyServiceInstance(service)));
+        this.services.clear();
         break;
       default:
         throw new Error('Received invalid reset strategy.');
@@ -205,14 +283,16 @@ export class ContainerInstance {
    * Returns all services registered with the given identifier.
    */
   private findAllServices(identifier: ServiceIdentifier): ServiceMetadata<unknown>[] {
-    return this.services.filter(service => service.id === identifier);
+    return this.services.get(identifier) ?? [];
   }
 
   /**
    * Finds registered service in the with a given service identifier.
    */
   private findService(identifier: ServiceIdentifier): ServiceMetadata<unknown> | undefined {
-    return this.services.find(service => service.id === identifier);
+    const services = this.services.get(identifier);
+
+    return services !== undefined ? services[0] : undefined;
   }
 
   /**
@@ -273,7 +353,14 @@ export class ContainerInstance {
     if (!serviceMetadata.factory && serviceMetadata.type) {
       const constructableTargetType: Constructable<unknown> = serviceMetadata.type;
       // setup constructor parameters for a newly initialized service
-      const paramTypes = (Reflect as any)?.getMetadata('design:paramtypes', constructableTargetType) || [];
+      let paramTypes: any[];
+      const cachedParamTypes = reflectedParamTypesCache.get(constructableTargetType);
+      if (cachedParamTypes !== undefined) {
+        paramTypes = cachedParamTypes;
+      } else {
+        paramTypes = (Reflect as any)?.getMetadata('design:paramtypes', constructableTargetType) || [];
+        reflectedParamTypesCache.set(constructableTargetType, paramTypes);
+      }
       const params = this.initializeParams(constructableTargetType, paramTypes);
 
       // "extra feature" - always pass container instance as the last argument to the service function
@@ -311,23 +398,34 @@ export class ContainerInstance {
    * Initializes all parameter types for a given target service class.
    */
   private initializeParams(target: Function, paramTypes: any[]): unknown[] {
+    /**
+     * @Inject()-ed values are stored as parameter handlers and they reference their target
+     * when created. So when a class is extended the @Inject()-ed values are not inherited
+     * because the handler still points to the old object only.
+     *
+     * As a quick fix a single level parent lookup is added via `Object.getPrototypeOf(target)`,
+     * however this should be updated to a more robust solution.
+     *
+     * TODO: Add proper inheritance handling: either copy the handlers when a class is registered what
+     * TODO: has it's parent already registered as dependency or make the lookup search up to the base Object.
+     *
+     * The handler sets only depend on `target`, so we look them up once here instead of for every
+     * parameter. The parent handlers are checked first to preserve the original registration order
+     * (a parent class is always registered before the class extending it). When no handlers are
+     * registered at all (e.g. plain constructor injection via reflected types) we skip the lookups
+     * entirely so the prototype walk and map reads are not paid on every instantiation.
+     */
+    const hasHandlers = Container.handlers.length !== 0;
+    const inheritedParamHandlers = hasHandlers
+      ? Container.getHandlersForObject(Object.getPrototypeOf(target))
+      : undefined;
+    const ownParamHandlers = hasHandlers ? Container.getHandlersForObject(target) : undefined;
+
     return paramTypes.map((paramType, index) => {
-      const paramHandler = Container.handlers.find(handler => {
-        /**
-         * @Inject()-ed values are stored as parameter handlers and they reference their target
-         * when created. So when a class is extended the @Inject()-ed values are not inherited
-         * because the handler still points to the old object only.
-         *
-         * As a quick fix a single level parent lookup is added via `Object.getPrototypeOf(target)`,
-         * however this should be updated to a more robust solution.
-         *
-         * TODO: Add proper inheritance handling: either copy the handlers when a class is registered what
-         * TODO: has it's parent already registered as dependency or make the lookup search up to the base Object.
-         */
-        return (
-          (handler.object === target || handler.object === Object.getPrototypeOf(target)) && handler.index === index
-        );
-      });
+      const paramHandler =
+        inheritedParamHandlers?.find(handler => handler.index === index) ??
+        ownParamHandlers?.find(handler => handler.index === index);
+
       if (paramHandler) return paramHandler.value(this);
 
       if (paramType && paramType.name && !this.isPrimitiveParamType(paramType.name)) {
@@ -342,21 +440,44 @@ export class ContainerInstance {
    * Checks if given parameter type is primitive type or not.
    */
   private isPrimitiveParamType(paramTypeName: string): boolean {
-    return ['string', 'boolean', 'number', 'object'].includes(paramTypeName.toLowerCase());
+    return PRIMITIVE_PARAM_TYPE_NAMES.has(paramTypeName.toLowerCase());
   }
 
   /**
    * Applies all registered handlers on a given target class.
    */
   private applyPropertyHandlers(target: Function, instance: { [key: string]: any }) {
-    Container.handlers.forEach(handler => {
-      if (typeof handler.index === 'number') return;
-      if (handler.object.constructor !== target && !(target.prototype instanceof handler.object.constructor)) return;
+    /** Nothing to apply when no handlers are registered at all — skips walking the prototype chain entirely. */
+    if (Container.handlers.length === 0) return;
 
-      if (handler.propertyName) {
-        instance[handler.propertyName] = handler.value(this);
-      }
-    });
+    /**
+     * Property handlers are registered against the class prototype (`handler.object`). A handler
+     * applies to `target` when its prototype is anywhere in `target`'s prototype chain, which is
+     * how the previous `instanceof`-based check selected them. We walk that chain from the base
+     * ancestor down to `target` so subclasses override the property values set by their parents,
+     * matching the original registration order (parents are always registered first).
+     */
+    const prototypeChain: object[] = [];
+    let prototype: object | null = target.prototype;
+
+    while (prototype) {
+      prototypeChain.push(prototype);
+      prototype = Object.getPrototypeOf(prototype);
+    }
+
+    for (let chainIndex = prototypeChain.length - 1; chainIndex >= 0; chainIndex--) {
+      const handlers = Container.getHandlersForObject(prototypeChain[chainIndex]);
+
+      if (handlers === undefined) continue;
+
+      handlers.forEach(handler => {
+        if (typeof handler.index === 'number') return;
+
+        if (handler.propertyName) {
+          instance[handler.propertyName] = handler.value(this);
+        }
+      });
+    }
   }
 
   /**
