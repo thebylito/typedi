@@ -93,6 +93,48 @@ describe('Inject Decorator', function () {
     expect(carNames).toContain('Toyota');
   });
 
+  it('should inject services into properties inherited from a base class', function () {
+    @Service()
+    class InjectedService {}
+
+    @Service()
+    class BaseService {
+      @Inject()
+      injected: InjectedService;
+    }
+
+    @Service()
+    class ChildService extends BaseService {}
+
+    const child = Container.get(ChildService);
+
+    expect(child).toBeInstanceOf(ChildService);
+    expect(child.injected).toBeInstanceOf(InjectedService);
+  });
+
+  it('should let a subclass override an inherited property injection', function () {
+    @Service()
+    class BaseInjected {}
+
+    @Service()
+    class OverriddenInjected {}
+
+    @Service()
+    class BaseService {
+      @Inject(() => BaseInjected)
+      injected: any;
+    }
+
+    @Service()
+    class ChildService extends BaseService {
+      @Inject(() => OverriddenInjected)
+      injected: any;
+    }
+
+    expect(Container.get(BaseService).injected).toBeInstanceOf(BaseInjected);
+    expect(Container.get(ChildService).injected).toBeInstanceOf(OverriddenInjected);
+  });
+
   it('should work with empty decorator on constructor parameter', function () {
     @Service()
     class InjectedClass {}

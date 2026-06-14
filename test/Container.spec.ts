@@ -33,6 +33,25 @@ describe('Container', function () {
     });
   });
 
+  describe('has', () => {
+    it('should report registered and unregistered services', () => {
+      Container.set('present', 'value');
+
+      expect(Container.has('present')).toBe(true);
+      expect(Container.has('absent')).toBe(false);
+    });
+
+    it('should fall back to the global container when called on a child container', () => {
+      Container.set('global-only', 'value');
+
+      const scopedContainer = Container.of('has-scope');
+
+      /** `has()` must mirror `get()`: a child container can resolve global services, so it "has" them. */
+      expect(scopedContainer.has('global-only')).toBe(true);
+      expect(scopedContainer.has('truly-absent')).toBe(false);
+    });
+  });
+
   describe('set', function () {
     it('should be able to set a class into the container', function () {
       class TestService {
@@ -122,6 +141,29 @@ describe('Container', function () {
     });
   });
 
+  describe('getMany', function () {
+    it('should return every value registered under a multiple-service identifier', function () {
+      Container.set([
+        { id: 'global-strategy', value: 'a', multiple: true },
+        { id: 'global-strategy', value: 'b', multiple: true },
+      ]);
+
+      expect(Container.getMany<string>('global-strategy')).toEqual(['a', 'b']);
+    });
+
+    it('should fall back to the global container when resolved from a child container', function () {
+      Container.set([
+        { id: 'scoped-strategy', value: 'a', multiple: true },
+        { id: 'scoped-strategy', value: 'b', multiple: true },
+      ]);
+
+      const scopedContainer = Container.of('get-many-scope');
+
+      /** `getMany` must mirror `get` and resolve globally-registered services from a child container. */
+      expect(scopedContainer.getMany<string>('scoped-strategy')).toEqual(['a', 'b']);
+    });
+  });
+
   describe('remove', function () {
     it('should be able to remove previously registered services', function () {
       class TestService {
@@ -164,6 +206,24 @@ describe('Container', function () {
       Container.reset();
       expect(Container.get(TestService)).not.toBe(testService);
       expect(Container.get(TestService).name).toBe('frank');
+    });
+
+    it('should remove registered handlers on reset', () => {
+      class TestService {
+        constructor(public value: string) {}
+      }
+
+      Container.registerHandler({
+        object: TestService,
+        index: 0,
+        value: () => 'first run',
+      });
+
+      expect(Container.handlers).toHaveLength(1);
+
+      Container.reset();
+
+      expect(Container.handlers).toHaveLength(0);
     });
   });
 

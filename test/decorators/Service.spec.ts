@@ -133,6 +133,30 @@ describe('Service Decorator', function () {
     expect(engine3Serial).not.toBe(engine1Serial);
   });
 
+  it('should create a new transient instance on every request, even when resolved from a child container', function () {
+    @Service({ transient: true })
+    class Engine {
+      public serial = Math.random();
+    }
+
+    const scopedContainer = Container.of('transient-scope');
+
+    const first = scopedContainer.get(Engine);
+    const second = scopedContainer.get(Engine);
+    const third = scopedContainer.get(Engine);
+
+    /**
+     * A transient service must never be cached in the child container: every resolution yields a
+     * brand new instance with its own serial.
+     */
+    expect(first).toBeInstanceOf(Engine);
+    expect(second).toBeInstanceOf(Engine);
+    expect(first).not.toBe(second);
+    expect(second).not.toBe(third);
+    expect(first.serial).not.toBe(second.serial);
+    expect(second.serial).not.toBe(third.serial);
+  });
+
   it('should support global services', function () {
     @Service()
     class Engine {
